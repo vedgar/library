@@ -1,0 +1,422 @@
+import builtins, itertools, operator, numbers
+from math import inf
+
+
+old_reversed = builtins.reversed
+old_divmod = builtins.divmod
+old_zip = builtins.zip
+old_map = builtins.map
+old_enumerate = builtins.enumerate
+old_filter = builtins.filter
+old_range = builtins.range
+
+old_chain = itertools.chain
+old_product = itertools.product
+old_cycle = itertools.cycle
+old_compress = itertools.compress
+old_repeat = itertools.repeat
+old_count = itertools.count
+
+
+class _UANE:
+    "Universal additive neutral element"
+
+    def __add__(uane, other):
+        return other
+
+    def __sub__(uane, other):
+        return -other
+
+    def __mul__(uane, other):
+        return uane
+
+    __rsub__ = __radd__ = __add__
+    __rmul__ = __mul__
+
+    def __neg__(uane):
+        return uane
+
+    def __pos__(uane):
+        return uane
+
+    def __repr__(uane):
+        return 'uane'
+
+
+uane = _UANE()
+
+
+class Sentinel:
+    def __init__(self, description=''):
+        self.description = description
+
+    def __str__(self):
+        return str(self.description)
+
+    def __repr__(self):
+        return type(self).__name__ + repr(self.description).join('()')
+
+
+SAME = Sentinel('SAME')
+
+
+def normalize_index(index, len):
+    if isinstance(index, slice):
+        return type(index)(index.indices(len)), True
+    elif isinstance(index, int):
+        if 0 <= index < len:
+            return index, False
+        elif 0 > index >= -len:
+            return index + len, False
+        else:
+            raise IndexError(f'Invalid index {index!r}')
+    else:
+        raise TypeError(f"can't index by {type(index)}
+
+
+class reversed:
+    def __init__(self, sequence):
+        self.sequence = sequence
+
+    def __contains__(self, value):
+        return value in self.sequence
+
+    def __len__(self):
+        return len(self.sequence)
+
+    def __getitem__(self, i):
+        i, isslice = normalize_index(~i, len(self))        
+        if isslice:
+            raise NotImplementedError('yet')
+        return self.sequence[i]
+
+    def __iter__(self):
+        return old_reversed(self.sequence)
+
+    def __reversed__(self):
+        return self.sequence
+
+
+def product(factors):
+    import functools
+    return functools.reduce(operator.mul, factors, 1)
+
+
+def divmod(dividend, *divisors):
+    def gen(quotient):
+        for d in reversed(divisors):
+            quotient, modulo = old_divmod(quotient, d)
+            yield modulo
+        yield quotient
+    return tuple(gen(dividend))[::-1]
+
+
+class zip:
+    def __init__(self, *iters):
+        self.iters = iters
+
+    def __iter__(self):
+        return old_zip(*self.iters)
+
+    def __len__(self):
+        return min(map(len, self.iters), default=0)
+
+    def __getitem__(self, i):
+        i, isslice = normalize_index(i, len(self))
+        gen = (it[i] for it in self.iters)
+        if isslice:
+            return type(self)(*gen)
+        return tuple(gen)
+
+
+class map:
+    def __init__(self, func, iter1, *iters):
+        self.func, self.iters = func, (iter1,) + iters
+
+    def __iter__(self):
+        return old_map(self.func, *self.iters)
+
+    def __len__(self):
+        return min(map(len, self.iters))
+
+    def __getitem__(self, i):
+        i, isslice = normalize_index(i, len(self))
+        gen = (it[i] for it in self.iters)
+        if isslice:
+            return type(self)(self.func, *gen)
+        return self.func(*gen)
+
+
+class enumerate:
+    def __init__(self, it, start=0, step=1):
+        self.it, self.start, self.step = it, start, step
+
+    def __iter__(self):
+        if self.step == 1:
+            return old_enumerate(self.it, self.start)
+        else:
+            return zip(count(self.start, self.step), self.it)
+
+    def __getitem__(self, i):
+        i, isslice = normalize_index(i, len(self))
+        if isinstance(i, slice):
+            return type(self)(self.it[i],
+                        self.start + self.step*i.start, self.step*i.step)
+        return self.start + i, self.it[i]
+
+    def __len__(self):
+        return len(self.it)
+
+
+class filter:
+    def __init__(self, pred, it=None):
+        if it is None:
+            self.pred, self.it = None, pred
+        else:
+            self.pred, self.it = pred, it
+
+    def __iter__(self):
+        return old_filter(self.pred, self.it)
+
+    def __contains__(self, value):
+        if self.pred is None:
+            testvalue = value
+        else:
+            testvalue = self.pred(value)
+        return testvalue and value in self.it
+
+
+class direct_sum:
+    def __init__(self, *iters):
+        self.iters = iters
+
+    def __contains__(self, value):
+        return any(value in it for it in self.iters)
+
+    def __len__(self):
+        return sum(map(len, self.iters))
+
+    def __iter__(self):
+        return old_chain(*self.iters)
+
+    def __getitem__(self, i):
+        i, isslice = normalize_index(i, len(self))
+        if isslice:
+            raise NotImplementedError('yet')
+
+
+class direct_product:
+    def __init__(self, *iters):
+        self.iters = iters
+
+    def __contains__(self, value):
+        return isinstance(value, tuple) and len(value) == len(self.iters) \
+                and all(map(operator.contains, self.iters, value))
+
+    def __iter__(self):
+        return old_product(*self.iters)
+
+    def __len__(self):
+        return product(map(len, self.iters))
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            raise NotImplementedError('slicing products is not supported')
+        elif isinstance(i, int):
+            lens = itertools.islice(map(len, self.iters), 1, None)
+            return self[divmod(i, *lens)]
+        elif isinstance(i, tuple):
+            if len(self.iters) != len(i):
+                raise ValueError(f'Wrong dimension, expected {len(self.iters)}')
+            gen = map(operator.getitem, self.iters, i)
+            if all(isinstance(j, slice) for j in i):
+                return type(self)(*gen)
+            elif all(isinstance(j, int) for j in i):
+                return tuple(gen)
+            else:
+                raise TypeError('mixing slicing and indexing is not allowed')
+        else:
+            raise TypeError('cannot index by {!r}'.format(type(i)))
+
+
+def direct_power(base, exponent):
+    if exponent >= 0:
+        return direct_product(*[base]*exponent)
+    raise ValueError('exponent must be nonnegative')
+
+
+class cycle:
+    def __init__(self, p):
+        self.p = p
+
+    def __iter__(self):
+        return old_cycle(self.p)
+
+    def __getitem__(self, i):
+        if isinstance(i, int) and i >= 0:
+            return self.p[i % len(self.p)]
+        else:
+            raise IndexError('invalid index {}'.format(i))
+
+    def __contains__(self, value):
+        return value in self.p
+
+
+class compress:
+    def __init__(self, data, selectors):
+        self.data, self.selectors = data, selectors
+
+    def __iter__(self):
+        return old_compress(self.data, self.selectors)
+
+    def __contains__(self, value):
+        ... #TODO: .indices (generator or sequence, singledispatch)
+        raise NotImplementedError('yet')
+
+
+class Seq:
+    def __init__(self, len=inf, start=0, step=1):
+        if not len:
+            start, step = None, uane
+        elif step is None:
+            step = uane
+        self.len, self.start, self.step = len, start, step
+
+    @property
+    def stop(self):
+        if self.len == inf:
+            return None
+        else:
+            return self.start + self.step*self.len
+
+    @property
+    def range(self):
+        return old_range(self.start, self.stop, self.step)
+
+    @property
+    def slice(self):
+        if self.step is uane:
+            raise ValueError('repeats cannot be represented as slices')
+        return slice(self.start, self.stop, self.step)
+
+    @classmethod
+    def fromrange(cls, range):
+        return cls(len(range), range.start, range.step)
+
+    @classmethod
+    def fromslice(cls, slice):
+        start = slice.start or 0
+        step = slice.step or 1
+        if slice.stop is None:
+            len_ = inf
+        else:
+            len_ = len(range(start, slice.stop, step))
+        return cls(len_, start, step)        
+
+    def __call__(self, len, start=0, step=1):
+        len_ = min(len, self.len - start)
+        if len_ <= 0:
+            return Seq(0, None, uane)
+        return Seq(len_, self[start], self.step * step)
+
+    def __len__(self):
+        if self.len is None:
+            raise ValueError('infinite seq has no representable len')
+        else:
+            return self.len
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return self[self.fromslice(i)]
+        elif isinstance(i, int):
+            if 0 <= i < self.len:
+                return self.start + self.step*i
+            elif 0 > i >= -self.len:
+                return self[self.len + i]
+            else:
+                raise IndexError('seq index out of range')
+        elif isinstance(i, Seq):
+            return self(i.len, i.start, i.step)
+        else:
+            raise TypeError('cannot slice seq by {}'.format(type(i)))
+
+    def __add__(self, other):
+        if isinstance(other, Seq):
+            if self.len == other.len:
+                if self.step is None:
+                    newstep = other.step
+                elif other.step is None:
+                    newstep = self.step
+                return type(self)(self.len, self.start + other.start, newstep)
+            else:
+                raise ValueError('seqs with unequal lengths cannot be added')
+        return type(self)(self.len, self.start + other, self.step)
+
+    def __mul__(self, other):
+        if isinstance(other, Seq):
+            raise TypeError('multiplying seqs mutually is not allowed')
+        elif self.step is None:
+            return type(self)(self.len, self.start * other, None)
+        else:
+            return type(self)(self.len, self.start * other, self.step * other)
+
+    __radd__ = __add__
+    __rmul__ = __mul__
+
+    def __pos__(self):
+        return self
+
+    def __neg__(self):
+        return self * -1
+
+    def __sub__(self, other):
+        return self + -other
+
+    def __rsub__(self, other):
+        return other + -self
+
+    def __repr__(self):
+        current = [self.len, self.start, self.step]
+        default = self.__init__.__defaults__
+        while current and current[-1] == default[len(current) - 1]:
+            del current[-1]
+        return type(self).__name__ + ', '.join(map(repr, current)).join('()')
+
+    def replace(self, *, len=SAME, start=SAME, step=SAME):
+        newlen = self.len if len is SAME else len
+        newstart = self.start if start is SAME else start
+        newstep = self.step if step is SAME else step
+        return type(self)(newlen, newstart, newstep)
+
+    def __str__(self):
+        if not self.step:
+            if self.len is None:
+                return 'repeat({!r})'.format(self.start)
+            else:
+                return 'repeat({!r}, {})'.format(self.start, self.len)
+        else:
+            s = 'seq'
+            if self.len is not None:
+                s += '[:{}]'.format(self.len)
+            if self.step == -1:
+                s = '-' + s
+            elif self.step != 1:
+                s = repr(self.step) + '*' + s
+            if self.start != 0:
+                s = repr(self.start) + '+'*(not s.startswith('-')) + s
+            return s
+            
+
+nats = Seq(inf, 0, 1)
+
+
+def repeat(elem, n=inf):
+    return Seq(n, elem, uane)
+
+
+def count(start=0, step=1):
+    return Seq(inf, start, step)
+
+
+def range(*args):
+    return Seq.fromrange(old_range(*args))
